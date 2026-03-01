@@ -30,6 +30,7 @@ function uiText(lang: DetectedLang) {
       title: '緊急通報アシスタント',
       prompt: '緊急事態の内容を話してください',
       micPermission: 'マイクの許可が必要です。ブラウザの権限を確認してください。',
+      callNow: 'タップして発信',
     }
   }
   if (lang === 'zh') {
@@ -37,12 +38,14 @@ function uiText(lang: DetectedLang) {
       title: '紧急通报助手',
       prompt: '请说出紧急情况',
       micPermission: '需要麦克风权限，请检查浏览器设置。',
+      callNow: '点击拨打',
     }
   }
   return {
     title: 'Emergency Call Assistant',
     prompt: 'Please describe your emergency',
     micPermission: 'Microphone permission is required. Please check browser settings.',
+    callNow: 'Tap to call',
   }
 }
 
@@ -76,15 +79,15 @@ function parseJsonMaybe(text: string): unknown {
   }
 }
 
-function emergencyHeuristic(text: string, lang: DetectedLang) {
+function emergencyHeuristic(text: string, lang: DetectedLang): { spoken_text: string; call: '119' | '110' | null } | null {
   const t = text.trim()
   const normalized = t.replace(/[\s\u3000]+/g, '')
   const isGreetingOnly = /^(もしもし|もしもーし|はい|お願いします|助けて|たすけて|help|hello|hi)$/i.test(normalized)
 
   if (isGreetingOnly) {
-    if (lang === 'ja') return 'どうしましたか？'
-    if (lang === 'zh') return '发生什么事了？'
-    return 'What happened?'
+    if (lang === 'ja') return { spoken_text: 'どうしましたか？', call: null }
+    if (lang === 'zh') return { spoken_text: '发生什么事了？', call: null }
+    return { spoken_text: 'What happened?', call: null }
   }
 
   const hasFire = /火事|火|煙|燃え|焦げ|ガス|爆発|fire|smoke|gas|explosion/i.test(t)
@@ -92,32 +95,41 @@ function emergencyHeuristic(text: string, lang: DetectedLang) {
   const hasCrime = /犯人|ストーカー|盗難|泥棒|暴力|脅迫|不審者|襲われ|crime|thief|stalker|attack|assault|threat/i.test(t)
 
   if (hasCrime) {
-    if (lang === 'ja') return '警察です。危険の可能性があります。電話番号は110です。いまどこにいますか？'
-    if (lang === 'zh') return '这是报警情况。电话号码是110。你现在在哪里？'
-    return 'This is a police emergency. The number is 110. Where are you now?'
+    if (lang === 'ja') return { spoken_text: '警察です。危険の可能性があります。電話番号は110です。いまどこにいますか？', call: '110' }
+    if (lang === 'zh') return { spoken_text: '这是报警情况。电话号码是110。你现在在哪里？', call: '110' }
+    return { spoken_text: 'This is a police emergency. The number is 110. Where are you now?', call: '110' }
   }
 
   if (hasFire) {
-    if (lang === 'ja') return '消防です。火災の可能性があります。電話番号は119です。いまどこにいますか？'
-    if (lang === 'zh') return '这是消防紧急情况。电话号码是119。你现在在哪里？'
-    return 'This is a fire emergency. The number is 119. Where are you now?'
+    if (lang === 'ja') return { spoken_text: '消防です。火災の可能性があります。電話番号は119です。いまどこにいますか？', call: '119' }
+    if (lang === 'zh') return { spoken_text: '这是消防紧急情况。电话号码是119。你现在在哪里？', call: '119' }
+    return { spoken_text: 'This is a fire emergency. The number is 119. Where are you now?', call: '119' }
   }
 
   if (hasBloodOrInjury) {
     const isBleeding = /血|出血|bleed|blood/i.test(t)
     if (lang === 'ja') {
-      return isBleeding
-        ? '血が止まらないのですね。救急です。病院へ搬送する機関の電話番号はこちらです。119。いまどこにいますか？'
-        : '救急です。電話番号は119です。いまどこにいますか？'
+      return {
+        spoken_text: isBleeding
+          ? '血が止まらないのですね。救急です。病院へ搬送する機関の電話番号はこちらです。119。いまどこにいますか？'
+          : '救急です。電話番号は119です。いまどこにいますか？',
+        call: '119',
+      }
     }
     if (lang === 'zh') {
-      return isBleeding
-        ? '你在流血且止不住。请拨打急救电话119。你现在在哪里？'
-        : '这是急救情况。请拨打119。你现在在哪里？'
+      return {
+        spoken_text: isBleeding
+          ? '你在流血且止不住。请拨打急救电话119。你现在在哪里？'
+          : '这是急救情况。请拨打119。你现在在哪里？',
+        call: '119',
+      }
     }
-    return isBleeding
-      ? 'You are bleeding and it won’t stop. Call 119 for an ambulance. Where are you now?'
-      : 'This is a medical emergency. Call 119. Where are you now?'
+    return {
+      spoken_text: isBleeding
+        ? 'You are bleeding and it won’t stop. Call 119 for an ambulance. Where are you now?'
+        : 'This is a medical emergency. Call 119. Where are you now?',
+      call: '119',
+    }
   }
 
   return null
@@ -148,6 +160,7 @@ function buildDispatchSystemMessage(lang: DetectedLang): ChatMessage {
 export default function Home() {
   const stt = useSpeechRecognition()
   const autoStartedRef = useRef(false)
+  const [callNumber, setCallNumber] = useState<'119' | '110' | null>(null)
 
   const preferredLang = useMemo<DetectedLang>(() => {
     if (typeof navigator === 'undefined') return 'en'
@@ -258,7 +271,8 @@ export default function Home() {
 
     const heuristic = emergencyHeuristic(text, lang)
     if (heuristic) {
-      await speakWithMiniMax(heuristic, lang)
+      setCallNumber(heuristic.call)
+      await speakWithMiniMax(heuristic.spoken_text, lang)
       return
     }
 
@@ -285,7 +299,16 @@ export default function Home() {
           ? (parsed as { spoken_text: string }).spoken_text
           : assistantText
 
+      const call =
+        parsed && typeof parsed === 'object' && parsed !== null && (parsed as { call?: unknown }).call === '119'
+          ? '119'
+          : parsed && typeof parsed === 'object' && parsed !== null && (parsed as { call?: unknown }).call === '110'
+            ? '110'
+            : null
+
       const safeSpoken = sanitizeAssistantText(spoken)
+      const inferredCall = /\b110\b/.test(safeSpoken) ? '110' : /\b119\b/.test(safeSpoken) ? '119' : null
+      setCallNumber(call ?? inferredCall)
       if (safeSpoken) await speakWithMiniMax(safeSpoken, lang)
     } finally {
       if (abortRef.current === ac) abortRef.current = null
@@ -310,6 +333,7 @@ export default function Home() {
       stt.stop()
       return
     }
+    setCallNumber(null)
     stt.reset()
     stt.start({ lang: sttLang })
   }
@@ -342,6 +366,16 @@ export default function Home() {
         <div className="flex-1 overflow-auto pt-8">
           <div className="whitespace-pre-wrap break-words text-[28px] leading-snug tracking-tight">{spokenText}</div>
         </div>
+        {callNumber ? (
+          <a
+            href={`tel:${callNumber}`}
+            onClick={(e) => e.stopPropagation()}
+            className="mb-2 inline-flex w-full items-center justify-between rounded-2xl bg-white px-5 py-4 text-zinc-950"
+          >
+            <div className="text-4xl font-semibold tracking-tight">{callNumber}</div>
+            <div className="text-sm font-semibold">{t.callNow}</div>
+          </a>
+        ) : null}
       </div>
       {showIdleIndicator ? (
         <div className="pointer-events-none fixed inset-0 flex items-center justify-center">
