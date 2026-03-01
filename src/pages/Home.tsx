@@ -31,6 +31,11 @@ function uiText(lang: DetectedLang) {
       prompt: '緊急事態の内容を話してください',
       micPermission: 'マイクの許可が必要です。ブラウザの権限を確認してください。',
       callNow: 'タップして発信',
+      listening: '音声入力中',
+      tapToStop: 'タップで停止',
+      tapToTalk: 'タップして話す',
+      processing: '処理中…',
+      aiSays: 'AIの案内',
     }
   }
   if (lang === 'zh') {
@@ -39,6 +44,11 @@ function uiText(lang: DetectedLang) {
       prompt: '请说出紧急情况',
       micPermission: '需要麦克风权限，请检查浏览器设置。',
       callNow: '点击拨打',
+      listening: '正在听',
+      tapToStop: '点击停止',
+      tapToTalk: '点击说话',
+      processing: '处理中…',
+      aiSays: 'AI提示',
     }
   }
   return {
@@ -46,6 +56,11 @@ function uiText(lang: DetectedLang) {
     prompt: 'Please describe your emergency',
     micPermission: 'Microphone permission is required. Please check browser settings.',
     callNow: 'Tap to call',
+    listening: 'Listening',
+    tapToStop: 'Tap to stop',
+    tapToTalk: 'Tap to talk',
+    processing: 'Processing…',
+    aiSays: 'AI guidance',
   }
 }
 
@@ -161,6 +176,9 @@ export default function Home() {
   const stt = useSpeechRecognition()
   const autoStartedRef = useRef(false)
   const [callNumber, setCallNumber] = useState<'119' | '110' | null>(null)
+  const [assistantText, setAssistantText] = useState('')
+  const [processing, setProcessing] = useState(false)
+  const dispatchRequestIdRef = useRef(0)
 
   const preferredLang = useMemo<DetectedLang>(() => {
     if (typeof navigator === 'undefined') return 'en'
@@ -269,10 +287,18 @@ export default function Home() {
   async function dispatch(text: string) {
     const lang = detectLanguageFromText(text)
 
+    const requestId = (dispatchRequestIdRef.current += 1)
+    setProcessing(true)
+    setAssistantText('')
+    setCallNumber(null)
+
     const heuristic = emergencyHeuristic(text, lang)
     if (heuristic) {
+      if (dispatchRequestIdRef.current !== requestId) return
       setCallNumber(heuristic.call)
+      setAssistantText(heuristic.spoken_text)
       await speakWithMiniMax(heuristic.spoken_text, lang)
+      if (dispatchRequestIdRef.current === requestId) setProcessing(false)
       return
     }
 
@@ -308,10 +334,14 @@ export default function Home() {
 
       const safeSpoken = sanitizeAssistantText(spoken)
       const inferredCall = /\b110\b/.test(safeSpoken) ? '110' : /\b119\b/.test(safeSpoken) ? '119' : null
+      if (dispatchRequestIdRef.current !== requestId) return
+
       setCallNumber(call ?? inferredCall)
+      setAssistantText(safeSpoken)
       if (safeSpoken) await speakWithMiniMax(safeSpoken, lang)
     } finally {
       if (abortRef.current === ac) abortRef.current = null
+      if (dispatchRequestIdRef.current === requestId) setProcessing(false)
     }
   }
 
@@ -334,6 +364,8 @@ export default function Home() {
       return
     }
     setCallNumber(null)
+    setAssistantText('')
+    setProcessing(false)
     stt.reset()
     stt.start({ lang: sttLang })
   }
@@ -363,8 +395,22 @@ export default function Home() {
           <div className="text-sm font-semibold tracking-tight text-white/90">{t.title}</div>
           <div className="text-xs text-white/60">{stt.error ? t.micPermission : t.prompt}</div>
         </div>
+
+        <div className="mt-3 inline-flex w-fit items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
+          {processing ? t.processing : stt.status === 'listening' ? t.listening : t.tapToTalk}
+          <span className="text-white/50">•</span>
+          {stt.status === 'listening' ? t.tapToStop : ''}
+        </div>
+
         <div className="flex-1 overflow-auto pt-8">
           <div className="whitespace-pre-wrap break-words text-[28px] leading-snug tracking-tight">{spokenText}</div>
+
+          {assistantText ? (
+            <div className="mt-6 rounded-2xl bg-white/5 p-4">
+              <div className="text-xs font-semibold text-white/70">{t.aiSays}</div>
+              <div className="mt-2 whitespace-pre-wrap break-words text-[18px] leading-snug text-white/90">{assistantText}</div>
+            </div>
+          ) : null}
         </div>
         {callNumber ? (
           <a
