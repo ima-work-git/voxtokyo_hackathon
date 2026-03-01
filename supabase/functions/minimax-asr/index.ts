@@ -18,7 +18,16 @@ Deno.serve(async (req) => {
   const apiKey = Deno.env.get('MINIMAX_API_KEY')
   if (!apiKey) return jsonResponse({ error: 'Server misconfigured: MINIMAX_API_KEY missing' }, { status: 500 })
 
-  const minimaxUrl = Deno.env.get('MINIMAX_ASR_URL')?.trim() || 'https://api.minimax.io/v1/audio/transcriptions'
+  const minimaxUrl = Deno.env.get('MINIMAX_ASR_URL')?.trim()
+  if (!minimaxUrl) {
+    return jsonResponse(
+      {
+        error: 'Server misconfigured: MINIMAX_ASR_URL missing',
+        hint: 'MiniMaxのSTT/ASRエンドポイントURLをSupabase secretsにMINIMAX_ASR_URLとして設定してください。',
+      },
+      { status: 500 },
+    )
+  }
   const defaultModel = Deno.env.get('MINIMAX_ASR_MODEL')?.trim() || 'minimax/speech-2.6-turbo'
 
   let form: FormData

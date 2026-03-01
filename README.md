@@ -27,16 +27,18 @@ npm run dev
 コード:
 - ASR: `supabase/functions/minimax-asr/index.ts`
 - Chat: `supabase/functions/minimax-chat/index.ts`
+- TTS: `supabase/functions/minimax-tts/index.ts`
 
 設定する環境変数（Supabase側）
 - `MINIMAX_API_KEY`: MiniMax APIキー（秘密）
-- `MINIMAX_ASR_URL`: 省略可。デフォルト `https://api.minimax.io/v1/audio/transcriptions`
+- `MINIMAX_ASR_URL`: MiniMaxのSTT/ASRエンドポイントURL（必須）
 - `MINIMAX_ASR_MODEL`: 省略可。デフォルト `minimax/speech-2.6-turbo`
 
 Supabase CLIでの例（手元の環境に合わせて実行）:
 ```bash
 supabase functions deploy minimax-asr --no-verify-jwt
 supabase functions deploy minimax-chat --no-verify-jwt
+supabase functions deploy minimax-tts --no-verify-jwt
 supabase secrets set MINIMAX_API_KEY=... MINIMAX_ASR_URL=https://api.minimax.io/v1/audio/transcriptions MINIMAX_ASR_MODEL=minimax/speech-2.6-turbo
 ```
 
@@ -47,3 +49,4 @@ supabase secrets set MINIMAX_API_KEY=... MINIMAX_ASR_URL=https://api.minimax.io/
 GitHubのRepository Secretsに以下を追加してください:
 - `VITE_ASR_PROXY_URL`: `https://<your-project>.functions.supabase.co/minimax-asr`
 - `VITE_CHAT_PROXY_URL`: `https://<your-project>.functions.supabase.co/minimax-chat`
+- `VITE_TTS_PROXY_URL`: `https://<your-project>.functions.supabase.co/minimax-tts`

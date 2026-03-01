@@ -1,9 +1,10 @@
 import { Mic, Square, Upload, RotateCcw, AudioLines, BadgeInfo, Send, Volume2, VolumeX } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAudioRecorder } from '@/hooks/useAudioRecorder'
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition'
 import { transcribeWithProxy } from '@/utils/asrClient'
 import { chatWithProxy, type ChatMessage } from '@/utils/chatClient'
+import { ttsWithProxy } from '@/utils/ttsClient'
 
 function formatSeconds(total: number) {
   const mm = String(Math.floor(total / 60)).padStart(2, '0')
@@ -24,6 +25,13 @@ export default function Home() {
   const [chatBusy, setChatBusy] = useState(false)
   const [chatInput, setChatInput] = useState('')
   const [ttsEnabled, setTtsEnabled] = useState(true)
+  const [ttsMode, setTtsMode] = useState<'browser' | 'minimax'>('minimax')
+  const [ttsVoiceId, setTtsVoiceId] = useState<string>('English_expressive_narrator')
+  const [ttsPlaying, setTtsPlaying] = useState(false)
+  const [ttsError, setTtsError] = useState<string | null>(null)
+  const [ttsAudioUrl, setTtsAudioUrl] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [voiceAutoSend, setVoiceAutoSend] = useState(true)
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -37,6 +45,9 @@ export default function Home() {
 
   const asrEndpoint = (import.meta.env.VITE_ASR_PROXY_URL as string | undefined)?.trim() ?? ''
   const chatEndpoint = (import.meta.env.VITE_CHAT_PROXY_URL as string | undefined)?.trim() ?? ''
+  const ttsEndpoint = (import.meta.env.VITE_TTS_PROXY_URL as string | undefined)?.trim() ?? ''
+
+  const prevDictationStatusRef = useRef(dictation.status)
 
   const canSend = useMemo(() => {
     return !!recorder.audioBlob && recorder.status === 'stopped' && !transcribing
@@ -46,7 +57,11 @@ export default function Home() {
     return !!chatEndpoint && !chatBusy && chatInput.trim().length > 0
   }, [chatBusy, chatEndpoint, chatInput])
 
-  function speak(text: string, lang: 'en-US' | 'ja-JP') {
+  const dictationHasText = useMemo(() => {
+    return dictation.transcript.trim().length > 0 || dictation.interimTranscript.trim().length > 0
+  }, [dictation.interimTranscript, dictation.transcript])
+
+  function speakWithBrowser(text: string, lang: 'en-US' | 'ja-JP') {
     if (!ttsEnabled) return
     if (typeof window === 'undefined') return
     if (!('speechSynthesis' in window)) return
@@ -54,6 +69,51 @@ export default function Home() {
     u.lang = lang
     window.speechSynthesis.cancel()
     window.speechSynthesis.speak(u)
+  }
+
+  async function speakWithMiniMax(text: string) {
+    if (!ttsEnabled) return
+    if (!ttsEndpoint) {
+      setTtsError('TTSのエンドポイントが未設定です。VITE_TTS_PROXY_URL を設定してください。')
+      return
+    }
+
+    setTtsError(null)
+    setTtsPlaying(true)
+    if (ttsAudioUrl) URL.revokeObjectURL(ttsAudioUrl)
+    setTtsAudioUrl(null)
+
+    const ac = new AbortController()
+    abortRef.current = ac
+
+    try {
+      const languageBoost = speechLang === 'ja-JP' ? 'Japanese' : 'English'
+      const res = await ttsWithProxy({
+        endpoint: ttsEndpoint,
+        text,
+        voice_id: ttsVoiceId,
+        language_boost: languageBoost,
+        signal: ac.signal,
+      })
+
+      if (!res.audio_url) {
+        setTtsError('TTSが音声URLを返しませんでした。')
+        return
+      }
+
+      setTtsAudioUrl(res.audio_url)
+      const a = audioRef.current
+      if (a) {
+        a.src = res.audio_url
+        await a.play()
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'TTSでエラーが発生しました。'
+      setTtsError(msg)
+    } finally {
+      setTtsPlaying(false)
+      abortRef.current = null
+    }
   }
 
   async function onTranscribe() {
@@ -91,8 +151,8 @@ export default function Home() {
     }
   }
 
-  async function onSendChat() {
-    const text = chatInput.trim()
+  async function onSendChat(overrideText?: string) {
+    const text = (overrideText ?? chatInput).trim()
     if (!text) return
     if (!chatEndpoint) {
       setChatError('チャットのエンドポイントが未設定です。VITE_CHAT_PROXY_URL を設定してください。')
@@ -119,7 +179,8 @@ export default function Home() {
       })
       const assistantText = result.text
       setChatMessages((prev) => [...prev, { role: 'assistant', content: assistantText }])
-      speak(assistantText, speechLang)
+      if (ttsMode === 'minimax') await speakWithMiniMax(assistantText)
+      else speakWithBrowser(assistantText, speechLang)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'チャットでエラーが発生しました。'
       setChatError(msg)
@@ -128,6 +189,24 @@ export default function Home() {
       abortRef.current = null
     }
   }
+
+  useEffect(() => {
+    const prev = prevDictationStatusRef.current
+    prevDictationStatusRef.current = dictation.status
+    if (prev !== 'listening') return
+    if (dictation.status === 'listening') return
+
+    const t = dictation.transcript.trim()
+    if (!t) return
+    dictation.reset()
+
+    if (voiceAutoSend) {
+      void onSendChat(t)
+      return
+    }
+
+    setChatInput((p) => (p ? `${p} ${t}` : t))
+  }, [dictation, voiceAutoSend])
 
   return (
     <div className="min-h-dvh bg-zinc-950 text-zinc-100">
@@ -407,6 +486,18 @@ export default function Home() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs text-zinc-400">
+                言語
+                <select
+                  value={speechLang}
+                  onChange={(e) => setSpeechLang(e.target.value as 'en-US' | 'ja-JP')}
+                  className="ml-2 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2 text-zinc-100"
+                >
+                  <option value="en-US">English</option>
+                  <option value="ja-JP">日本語</option>
+                </select>
+              </label>
+
               <button
                 type="button"
                 onClick={() => setTtsEnabled((v) => !v)}
@@ -415,12 +506,55 @@ export default function Home() {
                 {ttsEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
                 {ttsEnabled ? '読み上げON' : '読み上げOFF'}
               </button>
+
+              <label className="text-xs text-zinc-400">
+                読み上げ
+                <select
+                  value={ttsMode}
+                  onChange={(e) => setTtsMode(e.target.value as 'browser' | 'minimax')}
+                  className="ml-2 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2 text-zinc-100"
+                >
+                  <option value="minimax">MiniMax TTS</option>
+                  <option value="browser">ブラウザ</option>
+                </select>
+              </label>
+
+              {ttsMode === 'minimax' ? (
+                <label className="text-xs text-zinc-400">
+                  Voice
+                  <input
+                    value={ttsVoiceId}
+                    onChange={(e) => setTtsVoiceId(e.target.value)}
+                    className="ml-2 w-56 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2 text-zinc-100"
+                  />
+                </label>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={() => setVoiceAutoSend((v) => !v)}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-900"
+              >
+                {voiceAutoSend ? '音声→自動送信ON' : '音声→自動送信OFF'}
+              </button>
             </div>
           </div>
 
           {!chatEndpoint ? (
             <div className="mt-4 rounded-xl border border-amber-900/60 bg-amber-950/30 p-3 text-sm text-amber-200">
               `VITE_CHAT_PROXY_URL` が未設定です。GitHub Pages単体ではMiniMax APIキーを安全に扱えないため、プロキシ（例: Supabase Edge Function）が必要です。
+            </div>
+          ) : null}
+
+          {ttsMode === 'minimax' && !ttsEndpoint ? (
+            <div className="mt-4 rounded-xl border border-amber-900/60 bg-amber-950/30 p-3 text-sm text-amber-200">
+              `VITE_TTS_PROXY_URL` が未設定です。MiniMax TTSで読み上げるにはTTSプロキシが必要です。
+            </div>
+          ) : null}
+
+          {ttsError ? (
+            <div className="mt-4 rounded-xl border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
+              {ttsError}
             </div>
           ) : null}
 
@@ -453,6 +587,20 @@ export default function Home() {
               ) : null}
             </div>
           </div>
+
+          {ttsMode === 'minimax' ? (
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+              <audio
+                ref={audioRef}
+                controls
+                className="w-full"
+                onPlay={() => setTtsPlaying(true)}
+                onPause={() => setTtsPlaying(false)}
+                onEnded={() => setTtsPlaying(false)}
+                src={ttsAudioUrl ?? undefined}
+              />
+            </div>
+          ) : null}
 
           <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center">
             <div className="flex flex-1 items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2">
@@ -503,7 +651,7 @@ export default function Home() {
 
               <button
                 type="button"
-                onClick={onSendChat}
+                onClick={() => onSendChat()}
                 disabled={!canChat}
                 className="inline-flex items-center gap-2 rounded-xl bg-zinc-100 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
               >
@@ -528,6 +676,33 @@ export default function Home() {
               </button>
             </div>
           </div>
+
+          {!dictation.supported ? (
+            <div className="mt-3 rounded-xl border border-amber-900/60 bg-amber-950/30 p-3 text-sm text-amber-200">
+              このブラウザでは音声入力（Web Speech）が使えません。PCのChrome/Edgeで、アドレスバーのマイク権限を許可してください。
+            </div>
+          ) : null}
+
+          {dictation.error ? (
+            <div className="mt-3 rounded-xl border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
+              {dictation.error}
+            </div>
+          ) : null}
+
+          {dictationHasText ? (
+            <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+              <div className="mb-2 text-xs text-zinc-400">
+                音声入力プレビュー{dictation.status === 'listening' ? '（入力中）' : ''}
+              </div>
+              {dictation.transcript.trim() ? (
+                <div className="whitespace-pre-wrap break-words text-sm text-zinc-100">{dictation.transcript}</div>
+              ) : null}
+              {dictation.interimTranscript.trim() ? (
+                <div className="mt-2 whitespace-pre-wrap break-words text-sm text-zinc-400">{dictation.interimTranscript}</div>
+              ) : null}
+              <div className="mt-2 text-xs text-zinc-500">「反映」を押すと入力欄に入ります。</div>
+            </div>
+          ) : null}
         </section>
       </div>
     </div>

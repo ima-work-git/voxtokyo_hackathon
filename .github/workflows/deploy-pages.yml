@@ -28,6 +28,7 @@ jobs:
         env:
           VITE_ASR_PROXY_URL: ${{ secrets.VITE_ASR_PROXY_URL }}
           VITE_CHAT_PROXY_URL: ${{ secrets.VITE_CHAT_PROXY_URL }}
+          VITE_TTS_PROXY_URL: ${{ secrets.VITE_TTS_PROXY_URL }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
