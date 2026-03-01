@@ -43,24 +43,68 @@ export default function Home() {
     },
   ])
 
+  function stripThink(text: string) {
+    return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  }
+
+  function stripDecorations(text: string) {
+    return text.replace(/^=+$/gm, '').trim()
+  }
+
+  function sanitizeAssistantText(text: string) {
+    return stripDecorations(stripThink(text))
+  }
+
+  function parseJsonMaybe(text: string): unknown {
+    try {
+      return JSON.parse(text)
+    } catch {
+      const start = text.indexOf('{')
+      const end = text.lastIndexOf('}')
+      if (start >= 0 && end > start) {
+        try {
+          return JSON.parse(text.slice(start, end + 1))
+        } catch {
+          return null
+        }
+      }
+      return null
+    }
+  }
+
   const emergencySystemMessage: ChatMessage = useMemo(
     () => ({
       role: 'system',
-      content: `You are an emergency triage assistant in Japan. Your task: classify the user situation into ONE of: FIRE_DEPARTMENT(119), POLICE(110), AMBULANCE(119), or UNCLEAR. Ask only for missing critical information.
+      content: `あなたは日本の緊急通報（119/110）を受け付ける担当です。ユーザーの発話を受けて、消防/救急(119)か警察(110)かを判断し、不足情報があれば短く質問してください。
 
-Return STRICT JSON ONLY (no markdown) with keys:
-category: one of ["FIRE_DEPARTMENT(119)", "POLICE(110)", "AMBULANCE(119)", "UNCLEAR"],
-reason: short Japanese,
-missing_info_questions: array of short Japanese questions (0-3),
-immediate_actions: array of short Japanese instructions (0-5).
+制約:
+- 出力は日本語のみ
+- 絵文字・顔文字なし
+- 余談なし
+- <think>や思考の開示、説明文、Markdownは禁止
 
-Rules:
-- If there is smoke/fire/gas smell/explosion -> FIRE_DEPARTMENT(119).
-- If there is violence/crime/stalking/theft/suspicious person -> POLICE(110).
-- If there is injury/unconscious/bleeding/chest pain/breathing issues -> AMBULANCE(119).
-- If unsure, choose UNCLEAR and ask for location + what is happening.
-- Always ask for location in Japan (city/ward, nearest landmark) if missing.
-- Keep it concise and actionable.`,
+必ず STRICT JSON のみで返してください。JSONの形:
+{
+  "call": "119" | "110" | "unclear",
+  "category": "消防(119)" | "救急(119)" | "警察(110)" | "不明",
+  "reason": "短い理由（日本語）",
+  "missing_info_questions": ["質問", ...],
+  "immediate_actions": ["今すぐやること", ...],
+  "spoken_text": "この文章をそのまま読み上げる（日本語、短く）"
+}
+
+判断ルール:
+- 火災/煙/焦げ臭い/ガス臭い/爆発/建物の事故 → 消防(119)
+- けが/意識なし/出血/呼吸困難/胸痛/事故の負傷 → 救急(119)
+- 暴力/脅迫/犯罪/盗難/ストーカー/不審者/危険人物 → 警察(110)
+- 不明 → call=unclear にして、場所と状況を必ず質問
+
+不足情報の優先順:
+1) いま居る場所（市区町村/目印）
+2) いま起きていること（火/けが/犯罪など）
+3) けが人の有無・危険の継続
+
+spoken_text は「結論（119/110/不明）→短い理由→不足質問（ある場合は最大2つ）」を1つにまとめた短文にしてください。`,
     }),
     [],
   )
@@ -221,7 +265,7 @@ Rules:
         max_tokens: 512,
         signal: ac.signal,
       })
-      const assistantText = result.text
+      const assistantText = sanitizeAssistantText(result.text)
       setChatMessages((prev) => [...prev, { role: 'assistant', content: assistantText }])
       if (ttsMode === 'minimax') await speakWithMiniMax(assistantText)
       else speakWithBrowser(assistantText, speechLang)
@@ -262,9 +306,16 @@ Rules:
         signal: ac.signal,
       })
 
-      const assistantText = result.text
+      const assistantText = sanitizeAssistantText(result.text)
       setChatMessages((prev) => [...prev, { role: 'assistant', content: assistantText }])
-      await speakWithMiniMax(assistantText)
+
+      const parsed = parseJsonMaybe(assistantText)
+      const spoken =
+        parsed && typeof parsed === 'object' && parsed !== null && typeof (parsed as { spoken_text?: unknown }).spoken_text === 'string'
+          ? (parsed as { spoken_text: string }).spoken_text
+          : assistantText
+
+      await speakWithMiniMax(spoken)
     } catch (e) {
       const msg = e instanceof Error ? e.message : '緊急判定でエラーが発生しました。'
       setChatError(msg)
