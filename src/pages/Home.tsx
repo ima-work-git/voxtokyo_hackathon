@@ -28,7 +28,9 @@ function uiText(lang: DetectedLang) {
   if (lang === 'ja') {
     return {
       title: '緊急通報アシスタント',
+      titleEn: 'Emergency Call Assistant',
       prompt: '緊急事態の内容を話してください',
+      promptEn: 'Please describe your emergency',
       micPermission: 'マイクの許可が必要です。ブラウザの権限を確認してください。',
       callNow: 'タップして発信',
       listening: '音声入力中',
@@ -36,12 +38,17 @@ function uiText(lang: DetectedLang) {
       tapToTalk: 'タップして話す',
       processing: '処理中…',
       aiSays: 'AIの案内',
+      enableAudio: '音声を有効化',
+      enableAudioHint: 'タップすると読み上げが再生されます',
+      language: '言語',
     }
   }
   if (lang === 'zh') {
     return {
       title: '紧急通报助手',
+      titleEn: null,
       prompt: '请说出紧急情况',
+      promptEn: null,
       micPermission: '需要麦克风权限，请检查浏览器设置。',
       callNow: '点击拨打',
       listening: '正在听',
@@ -49,11 +56,16 @@ function uiText(lang: DetectedLang) {
       tapToTalk: '点击说话',
       processing: '处理中…',
       aiSays: 'AI提示',
+      enableAudio: '启用语音',
+      enableAudioHint: '点击后可播放语音提示',
+      language: '语言',
     }
   }
   return {
     title: 'Emergency Call Assistant',
+    titleEn: null,
     prompt: 'Please describe your emergency',
+    promptEn: null,
     micPermission: 'Microphone permission is required. Please check browser settings.',
     callNow: 'Tap to call',
     listening: 'Listening',
@@ -61,7 +73,17 @@ function uiText(lang: DetectedLang) {
     tapToTalk: 'Tap to talk',
     processing: 'Processing…',
     aiSays: 'AI guidance',
+    enableAudio: 'Enable audio',
+    enableAudioHint: 'Tap to allow audio playback',
+    language: 'Language',
   }
+}
+
+function isAutoplayBlockedError(e: unknown) {
+  if (e instanceof DOMException && e.name === 'NotAllowedError') return true
+  const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : ''
+  const m = String(msg).toLowerCase()
+  return m.includes('notallowederror') || m.includes('play() failed') || m.includes('user didn\'t interact') || m.includes('not allowed')
 }
 
 function stripThink(text: string) {
@@ -183,6 +205,8 @@ export default function Home() {
   const lastSpokenRef = useRef('')
   const silenceEndTriggeredRef = useRef(false)
 
+  const [history, setHistory] = useState<Array<{ user_text: string; assistant_text: string; call: '119' | '110' | null }>>([])
+
   const preferredLang = useMemo<DetectedLang>(() => {
     if (typeof navigator === 'undefined') return 'en'
     const langs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language]).filter(Boolean)
@@ -192,12 +216,20 @@ export default function Home() {
     return 'en'
   }, [])
 
+  const [selectedLang, setSelectedLang] = useState<DetectedLang>(preferredLang)
+
+  useEffect(() => {
+    setSelectedLang(preferredLang)
+  }, [preferredLang])
+
   const abortRef = useRef<AbortController | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const ttsObjectUrlRef = useRef<string | null>(null)
   const ttsAbortRef = useRef<AbortController | null>(null)
   const ttsRequestIdRef = useRef(0)
   const [ttsError, setTtsError] = useState<string | null>(null)
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false)
+  const pendingAudioSrcRef = useRef<string | null>(null)
 
   const chatEndpoint = (import.meta.env.VITE_CHAT_PROXY_URL as string | undefined)?.trim() ?? ''
   const ttsEndpoint = (import.meta.env.VITE_TTS_PROXY_URL as string | undefined)?.trim() ?? ''
@@ -214,7 +246,7 @@ export default function Home() {
   }, [spokenText])
 
   const detectedLang = useMemo(() => detectLanguageFromText(spokenText), [spokenText])
-  const sttLang = useMemo(() => toBcp47(preferredLang), [preferredLang])
+  const sttLang = useMemo(() => toBcp47(selectedLang), [selectedLang])
 
   useEffect(() => {
     if (autoStartedRef.current) return
@@ -301,6 +333,11 @@ export default function Home() {
       if (playPromise) {
         await playPromise.catch((e) => {
           if (ttsRequestIdRef.current !== requestId) return
+          if (isAutoplayBlockedError(e)) {
+            pendingAudioSrcRef.current = src
+            setNeedsAudioUnlock(true)
+            return
+          }
           const msg = e instanceof Error ? e.message : 'Playback failed'
           if (typeof msg === 'string' && msg.toLowerCase().includes('interrupted')) return
           setTtsError(msg)
@@ -315,8 +352,41 @@ export default function Home() {
     }
   }
 
+  async function tryPlayPendingAudio() {
+    const src = pendingAudioSrcRef.current
+    const a = audioRef.current
+    if (!src || !a) return
+    try {
+      a.src = src
+      a.load()
+      await a.play()
+      setNeedsAudioUnlock(false)
+      pendingAudioSrcRef.current = null
+    } catch (e) {
+      if (isAutoplayBlockedError(e)) return
+      const msg = e instanceof Error ? e.message : 'Playback failed'
+      setTtsError(msg)
+    }
+  }
+
+  useEffect(() => {
+    const a = audioRef.current
+    if (!a) return
+
+    const onEnded = () => {
+      if (!stt.supported) return
+      if (stt.status === 'listening') return
+      if (processing) return
+      stt.reset()
+      stt.start({ lang: sttLang })
+    }
+
+    a.addEventListener('ended', onEnded)
+    return () => a.removeEventListener('ended', onEnded)
+  }, [processing, stt, sttLang])
+
   async function dispatch(text: string) {
-    const lang = detectLanguageFromText(text)
+    const lang = selectedLang
 
     const requestId = (dispatchRequestIdRef.current += 1)
     setProcessing(true)
@@ -328,6 +398,7 @@ export default function Home() {
       if (dispatchRequestIdRef.current !== requestId) return
       setCallNumber(heuristic.call)
       setAssistantText(heuristic.spoken_text)
+      setHistory((prev) => [{ user_text: text, assistant_text: heuristic.spoken_text, call: heuristic.call }, ...prev].slice(0, 12))
       await speakWithMiniMax(heuristic.spoken_text, lang)
       if (dispatchRequestIdRef.current === requestId) setProcessing(false)
       return
@@ -369,6 +440,9 @@ export default function Home() {
 
       setCallNumber(call ?? inferredCall)
       setAssistantText(safeSpoken)
+      if (safeSpoken) {
+        setHistory((prev) => [{ user_text: text, assistant_text: safeSpoken, call: (call ?? inferredCall) as '119' | '110' | null }, ...prev].slice(0, 12))
+      }
       if (safeSpoken) await speakWithMiniMax(safeSpoken, lang)
     } finally {
       if (abortRef.current === ac) abortRef.current = null
@@ -395,6 +469,7 @@ export default function Home() {
       stt.stop()
       return
     }
+    void tryPlayPendingAudio()
     setCallNumber(null)
     setAssistantText('')
     setProcessing(false)
@@ -405,7 +480,7 @@ export default function Home() {
   const bg = stt.status === 'listening' ? 'bg-[#111827]' : 'bg-[#0B0F14]'
   const showIdleIndicator = !spokenText && stt.status !== 'listening'
   const showListeningIndicator = stt.status === 'listening'
-  const t = uiText(preferredLang)
+  const t = uiText(selectedLang)
 
   return (
     <div
@@ -425,16 +500,46 @@ export default function Home() {
       <div className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col px-5 pb-[max(24px,env(safe-area-inset-bottom))] pt-[max(20px,env(safe-area-inset-top))]">
         <div className="flex flex-col gap-1">
           <div className="text-sm font-semibold tracking-tight text-white/90">{t.title}</div>
+          {t.titleEn ? <div className="text-xs text-white/60">{t.titleEn}</div> : null}
           <div className="text-xs text-white/60">{stt.error ? t.micPermission : t.prompt}</div>
+          {t.promptEn ? <div className="text-[11px] text-white/45">{t.promptEn}</div> : null}
         </div>
 
-        <div className="mt-3 inline-flex w-fit items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
-          {processing ? t.processing : stt.status === 'listening' ? t.listening : t.tapToTalk}
-          <span className="text-white/50">•</span>
-          {stt.status === 'listening' ? t.tapToStop : ''}
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <div className="inline-flex w-fit items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
+            {processing ? t.processing : stt.status === 'listening' ? t.listening : t.tapToTalk}
+            <span className="text-white/50">•</span>
+            {stt.status === 'listening' ? t.tapToStop : ''}
+          </div>
+
+          <label className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
+            <span className="text-white/70">{t.language}</span>
+            <select
+              value={selectedLang}
+              onChange={(e) => setSelectedLang(e.target.value as DetectedLang)}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-transparent text-xs text-white outline-none"
+            >
+              <option value="ja">ja</option>
+              <option value="en">en</option>
+              <option value="zh">zh</option>
+            </select>
+          </label>
         </div>
 
         <div className="flex-1 overflow-auto pt-8">
+          {history.length ? (
+            <div className="mb-6 space-y-3">
+              {history.map((h, idx) => (
+                <div key={idx} className="rounded-2xl bg-white/5 p-4">
+                  <div className="text-xs text-white/60">{h.user_text}</div>
+                  <div className="mt-2 whitespace-pre-wrap break-words text-[16px] leading-snug text-white/90">{h.assistant_text}</div>
+                  {h.call ? <div className="mt-2 text-xs font-semibold text-white/70">{h.call}</div> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <div className="whitespace-pre-wrap break-words text-[28px] leading-snug tracking-tight">{spokenText}</div>
 
           {assistantText ? (
@@ -453,6 +558,20 @@ export default function Home() {
             <div className="text-4xl font-semibold tracking-tight">{callNumber}</div>
             <div className="text-sm font-semibold">{t.callNow}</div>
           </a>
+        ) : null}
+
+        {needsAudioUnlock ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              void tryPlayPendingAudio()
+            }}
+            className="mb-2 flex w-full flex-col items-start gap-1 rounded-2xl bg-white/10 px-5 py-4 text-left"
+          >
+            <div className="text-sm font-semibold text-white">{t.enableAudio}</div>
+            <div className="text-xs text-white/70">{t.enableAudioHint}</div>
+          </button>
         ) : null}
       </div>
       {showIdleIndicator ? (
