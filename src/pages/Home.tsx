@@ -31,6 +31,8 @@ export default function Home() {
   const [ttsError, setTtsError] = useState<string | null>(null)
   const [ttsAudioUrl, setTtsAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const ttsAbortRef = useRef<AbortController | null>(null)
+  const ttsRequestIdRef = useRef(0)
   const [voiceAutoSend, setVoiceAutoSend] = useState(true)
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -48,6 +50,10 @@ export default function Home() {
   const ttsEndpoint = (import.meta.env.VITE_TTS_PROXY_URL as string | undefined)?.trim() ?? ''
 
   const prevDictationStatusRef = useRef(dictation.status)
+
+  useEffect(() => {
+    if (!ttsEndpoint) setTtsMode('browser')
+  }, [ttsEndpoint])
 
   const canSend = useMemo(() => {
     return !!recorder.audioBlob && recorder.status === 'stopped' && !transcribing
@@ -79,12 +85,21 @@ export default function Home() {
     }
 
     setTtsError(null)
-    setTtsPlaying(true)
-    if (ttsAudioUrl) URL.revokeObjectURL(ttsAudioUrl)
-    setTtsAudioUrl(null)
+    const requestId = (ttsRequestIdRef.current += 1)
 
+    ttsAbortRef.current?.abort()
     const ac = new AbortController()
-    abortRef.current = ac
+    ttsAbortRef.current = ac
+
+    const a = audioRef.current
+    if (a) {
+      a.pause()
+      a.removeAttribute('src')
+      a.load()
+    }
+
+    setTtsPlaying(true)
+    setTtsAudioUrl(null)
 
     try {
       const languageBoost = speechLang === 'ja-JP' ? 'Japanese' : 'English'
@@ -96,23 +111,30 @@ export default function Home() {
         signal: ac.signal,
       })
 
+      if (ttsRequestIdRef.current !== requestId) return
+
       if (!res.audio_url) {
         setTtsError('TTSが音声URLを返しませんでした。')
         return
       }
 
       setTtsAudioUrl(res.audio_url)
-      const a = audioRef.current
-      if (a) {
-        a.src = res.audio_url
-        await a.play()
+      if (!a) return
+      a.src = res.audio_url
+      a.load()
+      const playPromise = a.play()
+      if (playPromise) {
+        await playPromise.catch((e) => {
+          const msg = e instanceof Error ? e.message : '音声の再生に失敗しました。'
+          setTtsError(msg)
+        })
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'TTSでエラーが発生しました。'
       setTtsError(msg)
     } finally {
-      setTtsPlaying(false)
-      abortRef.current = null
+      if (ttsRequestIdRef.current === requestId) setTtsPlaying(false)
+      if (ttsAbortRef.current === ac) ttsAbortRef.current = null
     }
   }
 
@@ -489,6 +511,8 @@ export default function Home() {
               <label className="text-xs text-zinc-400">
                 言語
                 <select
+                  id="chat-lang"
+                  name="chat-lang"
                   value={speechLang}
                   onChange={(e) => setSpeechLang(e.target.value as 'en-US' | 'ja-JP')}
                   className="ml-2 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2 text-zinc-100"
@@ -510,6 +534,8 @@ export default function Home() {
               <label className="text-xs text-zinc-400">
                 読み上げ
                 <select
+                  id="tts-mode"
+                  name="tts-mode"
                   value={ttsMode}
                   onChange={(e) => setTtsMode(e.target.value as 'browser' | 'minimax')}
                   className="ml-2 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2 text-zinc-100"
@@ -523,6 +549,8 @@ export default function Home() {
                 <label className="text-xs text-zinc-400">
                   Voice
                   <input
+                    id="tts-voice"
+                    name="tts-voice"
                     value={ttsVoiceId}
                     onChange={(e) => setTtsVoiceId(e.target.value)}
                     className="ml-2 w-56 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2 text-zinc-100"
