@@ -179,6 +179,9 @@ export default function Home() {
   const [assistantText, setAssistantText] = useState('')
   const [processing, setProcessing] = useState(false)
   const dispatchRequestIdRef = useRef(0)
+  const silenceTimerRef = useRef<number | null>(null)
+  const lastSpokenRef = useRef('')
+  const silenceEndTriggeredRef = useRef(false)
 
   const preferredLang = useMemo<DetectedLang>(() => {
     if (typeof navigator === 'undefined') return 'en'
@@ -206,6 +209,10 @@ export default function Home() {
     return interim || final
   }, [stt.interimTranscript, stt.transcript])
 
+  useEffect(() => {
+    lastSpokenRef.current = spokenText
+  }, [spokenText])
+
   const detectedLang = useMemo(() => detectLanguageFromText(spokenText), [spokenText])
   const sttLang = useMemo(() => toBcp47(preferredLang), [preferredLang])
 
@@ -215,6 +222,30 @@ export default function Home() {
     autoStartedRef.current = true
     stt.start({ lang: sttLang })
   }, [stt.start, stt.supported, sttLang])
+
+  useEffect(() => {
+    if (silenceTimerRef.current) {
+      window.clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+
+    if (stt.status !== 'listening') return
+
+    silenceTimerRef.current = window.setTimeout(() => {
+      if (stt.status !== 'listening') return
+      const t = lastSpokenRef.current.trim()
+      if (!t) return
+      silenceEndTriggeredRef.current = true
+      stt.stop()
+    }, 2000)
+
+    return () => {
+      if (silenceTimerRef.current) {
+        window.clearTimeout(silenceTimerRef.current)
+        silenceTimerRef.current = null
+      }
+    }
+  }, [spokenText, stt.status, stt.stop])
 
   async function speakWithMiniMax(text: string, lang: DetectedLang) {
     if (!ttsEndpoint) return
@@ -352,8 +383,9 @@ export default function Home() {
     if (prev !== 'listening') return
     if (stt.status === 'listening') return
 
-    const t = stt.transcript.trim()
+    const t = (silenceEndTriggeredRef.current ? lastSpokenRef.current : stt.transcript).trim()
     if (!t) return
+    silenceEndTriggeredRef.current = false
     void dispatch(t)
   }, [stt.status, stt.transcript])
 
