@@ -248,6 +248,20 @@ export default function Home() {
   const detectedLang = useMemo(() => detectLanguageFromText(spokenText), [spokenText])
   const sttLang = useMemo(() => toBcp47(selectedLang), [selectedLang])
 
+  function restartListening() {
+    if (!stt.supported) return
+    if (processing) return
+    if (stt.status === 'listening') return
+
+    window.setTimeout(() => {
+      if (!stt.supported) return
+      if (processing) return
+      if (stt.status === 'listening') return
+      stt.reset()
+      stt.start({ lang: sttLang })
+    }, 200)
+  }
+
   useEffect(() => {
     if (autoStartedRef.current) return
     if (!stt.supported) return
@@ -336,6 +350,7 @@ export default function Home() {
           if (isAutoplayBlockedError(e)) {
             pendingAudioSrcRef.current = src
             setNeedsAudioUnlock(true)
+            restartListening()
             return
           }
           const msg = e instanceof Error ? e.message : 'Playback failed'
@@ -374,11 +389,7 @@ export default function Home() {
     if (!a) return
 
     const onEnded = () => {
-      if (!stt.supported) return
-      if (stt.status === 'listening') return
-      if (processing) return
-      stt.reset()
-      stt.start({ lang: sttLang })
+      restartListening()
     }
 
     a.addEventListener('ended', onEnded)
