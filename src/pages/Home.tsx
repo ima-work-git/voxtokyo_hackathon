@@ -128,6 +128,14 @@ function extractCallFromText(text: string): '119' | '110' | null {
   return null
 }
 
+function normalizeForCompare(text: string) {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/[“”"'`.,!?，。！？:;（）()\[\]{}<>]/g, '')
+}
+
 function emergencyHeuristic(text: string, lang: DetectedLang): { spoken_text: string; call: '119' | '110' | null } | null {
   const t = text.trim()
   const normalized = t.replace(/[\s\u3000]+/g, '')
@@ -140,7 +148,10 @@ function emergencyHeuristic(text: string, lang: DetectedLang): { spoken_text: st
   }
 
   const hasFire = /火事|火|煙|燃え|焦げ|ガス|爆発|火灾|着火|烟|煤气|爆炸|fire|smoke|gas|explosion/i.test(t)
-  const hasBloodOrInjury = /血|出血|けが|怪我|意識|倒れ|呼吸|苦しい|胸|痛い|流血|受伤|昏迷|呼吸困难|胸痛|疼|bleed|blood|injury|hurt|unconscious|breath|chest/i.test(t)
+  const hasBloodOrInjury =
+    /血|出血|けが|怪我|意識|倒れ|呼吸|苦しい|胸|痛い|流血|受伤|昏迷|呼吸困难|胸痛|bleed|blood|injury|hurt|unconscious|breath|breathing|can\s*not\s*breathe|shortness\s*of\s*breath|chest\s*pain/i.test(
+      t,
+    )
   const hasCrime = /犯人|ストーカー|盗難|泥棒|暴力|脅迫|不審者|襲われ|跟踪|骚扰|偷|盗窃|打人|威胁|可疑|crime|thief|stalker|attack|assault|threat/i.test(t)
 
   if (hasCrime) {
@@ -156,7 +167,7 @@ function emergencyHeuristic(text: string, lang: DetectedLang): { spoken_text: st
   }
 
   if (hasBloodOrInjury) {
-    const isBleeding = /血|出血|bleed|blood/i.test(t)
+    const isBleeding = /血|出血|bleed|blood|流血/i.test(t)
     if (lang === 'ja') {
       return {
         spoken_text: isBleeding
@@ -176,7 +187,7 @@ function emergencyHeuristic(text: string, lang: DetectedLang): { spoken_text: st
     return {
       spoken_text: isBleeding
         ? 'You are bleeding and it won’t stop. Call 119 for an ambulance. Where are you now?'
-        : 'This is a medical emergency. Call 119. Where are you now?',
+        : 'This is a medical emergency. The number is 119. Where are you now?',
       call: '119',
     }
   }
@@ -189,20 +200,20 @@ function buildDispatchSystemMessage(lang: DetectedLang): ChatMessage {
     return {
       role: 'system',
       content:
-        'あなたは日本の緊急通報（119/110）を受け付ける指令員です。通報者テキストを受け取り、必ず次の形式のSTRICT JSONのみで返してください。<think>や説明文、Markdownは禁止です。\n\n{\n  "spoken_text": "この文章をそのまま読み上げる（日本語、短く）"\n}\n\nルール: (1) 火災/煙/ガス/爆発なら119を明示。(2) けが/出血/意識なし/呼吸困難なら119を明示。(3) 犯罪/暴力/不審者/ストーカーなら110を明示。(4) 状況が不明なら「どうしましたか？」だけ返す。\n禁止: 「緊急ですか？」と聞かない。絵文字を使わない。',
+        'あなたは日本の緊急通報（119/110）を受け付ける指令員です。通報者テキストを受け取り、必ず次の形式のSTRICT JSONのみで返してください。<think>や説明文、Markdownは禁止です。\n\n{\n  "call": "119" | "110" | null,\n  "spoken_text": "この文章をそのまま読み上げる（日本語、短く）"\n}\n\nルール: (1) 火災/煙/ガス/爆発なら call=119 を明示。(2) けが/出血/意識なし/呼吸困難/胸痛/強い痛み/体調不良（例: 頭痛・腹痛・吐き気・めまい・発熱）なら call=119 を明示。(3) 犯罪/暴力/不審者/ストーカーなら call=110 を明示。(4) 本当に状況が不明（挨拶だけ等）なら call=null で「どうしましたか？」だけ返す。\n禁止: 「緊急ですか？」と聞かない。絵文字を使わない。',
     }
   }
   if (lang === 'zh') {
     return {
       role: 'system',
       content:
-        '你是日本的紧急报警接线员（119/110）。只返回STRICT JSON（禁止<think>、解释、Markdown）。\n\n{\n  "spoken_text": "要直接朗读的短句（中文）"\n}\n\n规则: (1) 火灾/烟/煤气/爆炸→明确119。(2) 受伤/出血/昏迷/呼吸困难→明确119。(3) 犯罪/暴力/可疑人物/跟踪→明确110。(4) 情况不明→只问“发生什么事了？”。\n禁止: 不要问“是否紧急？”，不要用表情符号。',
+        '你是日本的紧急报警接线员（119/110）。只返回STRICT JSON（禁止<think>、解释、Markdown）。\n\n{\n  "call": "119" | "110" | null,\n  "spoken_text": "要直接朗读的短句（中文）"\n}\n\n规则: (1) 火灾/烟/煤气/爆炸 → call=119 并明确119。(2) 受伤/出血/昏迷/呼吸困难/胸痛/明显疼痛/不适（例: 头痛、腹痛、恶心、眩晕、发烧）→ call=119 并明确119。(3) 犯罪/暴力/可疑人物/跟踪 → call=110 并明确110。(4) 只有问候等确实不清楚 → call=null，只问“发生什么事了？”。\n禁止: 不要问“是否紧急？”，不要用表情符号。',
     }
   }
   return {
     role: 'system',
     content:
-      'You are a Japanese emergency dispatcher (119/110). Return STRICT JSON only (no <think>, no explanations, no markdown).\n\n{\n  "spoken_text": "A short sentence to read aloud in English"\n}\n\nRules: (1) Fire/smoke/gas/explosion -> clearly tell 119. (2) Injury/bleeding/unconscious/breathing issues -> clearly tell 119. (3) Crime/violence/suspicious person/stalker -> clearly tell 110. (4) If unclear, only ask: "What happened?"\nForbidden: Do not ask "Is it an emergency?" Do not use emojis.',
+      'You are a Japanese emergency dispatcher (119/110). Return STRICT JSON only (no <think>, no explanations, no markdown).\n\n{\n  "call": "119" | "110" | null,\n  "spoken_text": "A short sentence to read aloud in English"\n}\n\nRules: (1) Fire/smoke/gas/explosion -> call=119 and clearly say 119. (2) Injury/bleeding/unconscious/breathing issues/chest pain OR feeling unwell (e.g., headache, migraine, stomach ache, abdominal pain, nausea, vomiting, dizziness, fainting, fever) -> call=119 and clearly say 119. (3) Crime/violence/suspicious person/stalker -> call=110 and clearly say 110. (4) Only if truly unclear (greeting only etc.), set call=null and only ask: "What happened?"\nForbidden: Do not ask "Is it an emergency?" Do not use emojis.',
   }
 }
 
@@ -211,6 +222,7 @@ export default function Home() {
   const autoStartedRef = useRef(false)
   const [callNumber, setCallNumber] = useState<'119' | '110' | null>(null)
   const [assistantText, setAssistantText] = useState('')
+  const lastAssistantRef = useRef('')
   const [processing, setProcessing] = useState(false)
   const dispatchRequestIdRef = useRef(0)
   const silenceTimerRef = useRef<number | null>(null)
@@ -256,6 +268,10 @@ export default function Home() {
   useEffect(() => {
     lastSpokenRef.current = spokenText
   }, [spokenText])
+
+  useEffect(() => {
+    lastAssistantRef.current = assistantText
+  }, [assistantText])
 
   const detectedLang = useMemo(() => detectLanguageFromText(spokenText), [spokenText])
   const sttLang = useMemo(() => toBcp47(selectedLang), [selectedLang])
@@ -483,6 +499,16 @@ export default function Home() {
     const t = (silenceEndTriggeredRef.current ? lastSpokenRef.current : stt.transcript).trim()
     if (!t) return
     silenceEndTriggeredRef.current = false
+
+    const norm = normalizeForCompare(t)
+    const normAssistant = normalizeForCompare(lastAssistantRef.current)
+    const isLikelyEcho = normAssistant && norm === normAssistant
+    const isUiNoise = norm === 'aiguidance' || norm === 'enableaudio' || norm === 'taptotalk' || norm === 'taptostop'
+    if (isLikelyEcho || isUiNoise) {
+      restartListening()
+      return
+    }
+
     void dispatch(t)
   }, [stt.status, stt.transcript])
 
