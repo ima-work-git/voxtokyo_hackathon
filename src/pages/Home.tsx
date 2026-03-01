@@ -24,6 +24,28 @@ function toLanguageBoost(lang: DetectedLang) {
   return 'English'
 }
 
+function uiText(lang: DetectedLang) {
+  if (lang === 'ja') {
+    return {
+      title: '緊急通報アシスタント',
+      prompt: '緊急事態の内容を話してください',
+      micPermission: 'マイクの許可が必要です。ブラウザの権限を確認してください。',
+    }
+  }
+  if (lang === 'zh') {
+    return {
+      title: '紧急通报助手',
+      prompt: '请说出紧急情况',
+      micPermission: '需要麦克风权限，请检查浏览器设置。',
+    }
+  }
+  return {
+    title: 'Emergency Call Assistant',
+    prompt: 'Please describe your emergency',
+    micPermission: 'Microphone permission is required. Please check browser settings.',
+  }
+}
+
 function stripThink(text: string) {
   return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
 }
@@ -34,7 +56,7 @@ function stripDecorations(text: string) {
 
 function sanitizeAssistantText(text: string) {
   const cleaned = stripDecorations(stripThink(text))
-  return cleaned.replace(/[\p{Extended_Pictographic}\uFE0F]/gu, '').trim()
+  return cleaned.replace(/[\u2600-\u27BF]/g, '').replace(/\uFE0F/g, '').trim()
 }
 
 function parseJsonMaybe(text: string): unknown {
@@ -125,6 +147,15 @@ function buildDispatchSystemMessage(lang: DetectedLang): ChatMessage {
 
 export default function Home() {
   const stt = useSpeechRecognition()
+  const autoStartedRef = useRef(false)
+
+  const preferredLang = useMemo<DetectedLang>(() => {
+    if (typeof navigator === 'undefined') return 'en'
+    const l = (navigator.language || '').toLowerCase()
+    if (l.startsWith('ja')) return 'ja'
+    if (l.startsWith('zh')) return 'zh'
+    return 'en'
+  }, [])
 
   const abortRef = useRef<AbortController | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -144,7 +175,17 @@ export default function Home() {
   }, [stt.interimTranscript, stt.transcript])
 
   const detectedLang = useMemo(() => detectLanguageFromText(spokenText), [spokenText])
-  const sttLang = useMemo(() => toBcp47(detectedLang), [detectedLang])
+  const sttLang = useMemo(() => {
+    if (!spokenText) return toBcp47(preferredLang)
+    return toBcp47(detectedLang)
+  }, [detectedLang, preferredLang, spokenText])
+
+  useEffect(() => {
+    if (autoStartedRef.current) return
+    if (!stt.supported) return
+    autoStartedRef.current = true
+    stt.start({ lang: toBcp47(preferredLang) })
+  }, [preferredLang, stt.start, stt.supported])
 
   async function speakWithMiniMax(text: string, lang: DetectedLang) {
     if (!ttsEndpoint) return
@@ -276,6 +317,9 @@ export default function Home() {
   }
 
   const bg = stt.status === 'listening' ? 'bg-[#111827]' : 'bg-[#0B0F14]'
+  const showIdleIndicator = !spokenText && stt.status !== 'listening'
+  const showListeningIndicator = stt.status === 'listening'
+  const t = uiText(preferredLang)
 
   return (
     <div
@@ -292,11 +336,26 @@ export default function Home() {
       }}
     >
       <audio ref={audioRef} className="hidden" />
-      <div className="mx-auto flex min-h-dvh w-full max-w-2xl items-start px-5 pb-[max(24px,env(safe-area-inset-bottom))] pt-[max(20px,env(safe-area-inset-top))]">
-        <div className="w-full overflow-auto pt-10">
+      <div className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col px-5 pb-[max(24px,env(safe-area-inset-bottom))] pt-[max(20px,env(safe-area-inset-top))]">
+        <div className="flex flex-col gap-1">
+          <div className="text-sm font-semibold tracking-tight text-white/90">{t.title}</div>
+          <div className="text-xs text-white/60">{stt.error ? t.micPermission : t.prompt}</div>
+        </div>
+        <div className="flex-1 overflow-auto pt-8">
           <div className="whitespace-pre-wrap break-words text-[28px] leading-snug tracking-tight">{spokenText}</div>
         </div>
       </div>
+      {showIdleIndicator ? (
+        <div className="pointer-events-none fixed inset-0 flex items-center justify-center">
+          <div className="h-3 w-3 rounded-full bg-white/60" />
+        </div>
+      ) : null}
+      {showListeningIndicator ? (
+        <div className="pointer-events-none fixed inset-0 flex items-center justify-center">
+          <div className="h-3 w-3 rounded-full bg-white/80" />
+          <div className="absolute h-16 w-16 animate-ping rounded-full bg-white/10" />
+        </div>
+      ) : null}
       {ttsError ? <span className="hidden">{ttsError}</span> : null}
     </div>
   )
