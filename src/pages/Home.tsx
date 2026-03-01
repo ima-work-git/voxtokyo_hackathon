@@ -43,6 +43,28 @@ export default function Home() {
     },
   ])
 
+  const emergencySystemMessage: ChatMessage = useMemo(
+    () => ({
+      role: 'system',
+      content: `You are an emergency triage assistant in Japan. Your task: classify the user situation into ONE of: FIRE_DEPARTMENT(119), POLICE(110), AMBULANCE(119), or UNCLEAR. Ask only for missing critical information.
+
+Return STRICT JSON ONLY (no markdown) with keys:
+category: one of ["FIRE_DEPARTMENT(119)", "POLICE(110)", "AMBULANCE(119)", "UNCLEAR"],
+reason: short Japanese,
+missing_info_questions: array of short Japanese questions (0-3),
+immediate_actions: array of short Japanese instructions (0-5).
+
+Rules:
+- If there is smoke/fire/gas smell/explosion -> FIRE_DEPARTMENT(119).
+- If there is violence/crime/stalking/theft/suspicious person -> POLICE(110).
+- If there is injury/unconscious/bleeding/chest pain/breathing issues -> AMBULANCE(119).
+- If unsure, choose UNCLEAR and ask for location + what is happening.
+- Always ask for location in Japan (city/ward, nearest landmark) if missing.
+- Keep it concise and actionable.`,
+    }),
+    [],
+  )
+
   const abortRef = useRef<AbortController | null>(null)
 
   const asrEndpoint = (import.meta.env.VITE_ASR_PROXY_URL as string | undefined)?.trim() ?? ''
@@ -205,6 +227,46 @@ export default function Home() {
       else speakWithBrowser(assistantText, speechLang)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'チャットでエラーが発生しました。'
+      setChatError(msg)
+    } finally {
+      setChatBusy(false)
+      abortRef.current = null
+    }
+  }
+
+  async function onEmergencyTriage(overrideText?: string) {
+    const text = (overrideText ?? chatInput).trim()
+    if (!text) return
+    if (!chatEndpoint) {
+      setChatError('チャットのエンドポイントが未設定です。VITE_CHAT_PROXY_URL を設定してください。')
+      return
+    }
+
+    setChatError(null)
+    setTtsError(null)
+    setChatBusy(true)
+
+    const ac = new AbortController()
+    abortRef.current = ac
+
+    const messages: ChatMessage[] = [emergencySystemMessage, { role: 'user', content: text }]
+    setChatMessages(messages)
+    setChatInput('')
+
+    try {
+      const result = await chatWithProxy({
+        endpoint: chatEndpoint,
+        messages,
+        temperature: 0.0,
+        max_tokens: 512,
+        signal: ac.signal,
+      })
+
+      const assistantText = result.text
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: assistantText }])
+      await speakWithMiniMax(assistantText)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '緊急判定でエラーが発生しました。'
       setChatError(msg)
     } finally {
       setChatBusy(false)
@@ -689,8 +751,18 @@ export default function Home() {
 
               <button
                 type="button"
+                onClick={() => onEmergencyTriage()}
+                disabled={!canChat}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-2 text-sm font-semibold text-red-100 hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                緊急判定
+              </button>
+
+              <button
+                type="button"
                 onClick={() => {
                   abortRef.current?.abort()
+                  ttsAbortRef.current?.abort()
                   dictation.reset()
                   setChatError(null)
                   setChatBusy(false)
