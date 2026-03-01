@@ -1,8 +1,9 @@
-import { Mic, Square, Upload, RotateCcw, AudioLines, BadgeInfo } from 'lucide-react'
+import { Mic, Square, Upload, RotateCcw, AudioLines, BadgeInfo, Send, Volume2, VolumeX } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { useAudioRecorder } from '@/hooks/useAudioRecorder'
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition'
 import { transcribeWithProxy } from '@/utils/asrClient'
+import { chatWithProxy, type ChatMessage } from '@/utils/chatClient'
 
 function formatSeconds(total: number) {
   const mm = String(Math.floor(total / 60)).padStart(2, '0')
@@ -13,19 +14,47 @@ function formatSeconds(total: number) {
 export default function Home() {
   const recorder = useAudioRecorder()
   const speech = useSpeechRecognition()
+  const dictation = useSpeechRecognition()
   const [mode, setMode] = useState<'local' | 'proxy'>('local')
   const [speechLang, setSpeechLang] = useState<'en-US' | 'ja-JP'>('en-US')
   const [transcribing, setTranscribing] = useState(false)
   const [transcript, setTranscript] = useState<string>('')
   const [apiError, setApiError] = useState<string | null>(null)
+  const [chatError, setChatError] = useState<string | null>(null)
+  const [chatBusy, setChatBusy] = useState(false)
+  const [chatInput, setChatInput] = useState('')
+  const [ttsEnabled, setTtsEnabled] = useState(true)
+
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      role: 'system',
+      content:
+        'You are a helpful assistant for visiting tourists in Japan. Keep responses short and practical. If the user seems to have an emergency, ask one short follow-up question about location.',
+    },
+  ])
 
   const abortRef = useRef<AbortController | null>(null)
 
   const asrEndpoint = (import.meta.env.VITE_ASR_PROXY_URL as string | undefined)?.trim() ?? ''
+  const chatEndpoint = (import.meta.env.VITE_CHAT_PROXY_URL as string | undefined)?.trim() ?? ''
 
   const canSend = useMemo(() => {
     return !!recorder.audioBlob && recorder.status === 'stopped' && !transcribing
   }, [recorder.audioBlob, recorder.status, transcribing])
+
+  const canChat = useMemo(() => {
+    return !!chatEndpoint && !chatBusy && chatInput.trim().length > 0
+  }, [chatBusy, chatEndpoint, chatInput])
+
+  function speak(text: string, lang: 'en-US' | 'ja-JP') {
+    if (!ttsEnabled) return
+    if (typeof window === 'undefined') return
+    if (!('speechSynthesis' in window)) return
+    const u = new SpeechSynthesisUtterance(text)
+    u.lang = lang
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(u)
+  }
 
   async function onTranscribe() {
     if (!recorder.audioBlob) return
@@ -58,6 +87,44 @@ export default function Home() {
       setApiError(msg)
     } finally {
       setTranscribing(false)
+      abortRef.current = null
+    }
+  }
+
+  async function onSendChat() {
+    const text = chatInput.trim()
+    if (!text) return
+    if (!chatEndpoint) {
+      setChatError('チャットのエンドポイントが未設定です。VITE_CHAT_PROXY_URL を設定してください。')
+      return
+    }
+
+    setChatError(null)
+    setChatBusy(true)
+
+    const ac = new AbortController()
+    abortRef.current = ac
+
+    const nextMessages: ChatMessage[] = [...chatMessages, { role: 'user', content: text }]
+    setChatMessages(nextMessages)
+    setChatInput('')
+
+    try {
+      const result = await chatWithProxy({
+        endpoint: chatEndpoint,
+        messages: nextMessages,
+        temperature: 0.2,
+        max_tokens: 512,
+        signal: ac.signal,
+      })
+      const assistantText = result.text
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: assistantText }])
+      speak(assistantText, speechLang)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'チャットでエラーが発生しました。'
+      setChatError(msg)
+    } finally {
+      setChatBusy(false)
       abortRef.current = null
     }
   }
@@ -179,8 +246,7 @@ export default function Home() {
                 <div className="flex items-start gap-2">
                   <BadgeInfo className="mt-0.5 h-4 w-4 text-zinc-300" />
                   <div>
-                    MiniMax等の外部APIをブラウザから直接呼ぶ場合、APIキー露出とCORS制限で詰まりやすいです。
-                    デモを確実に動かすため、ここでは外部APIを使いません。
+                    音声認識はブラウザ機能で完結します。MiniMax等の外部APIは、APIキー露出とCORS制限があるため、通常はプロキシが必要です。
                   </div>
                 </div>
               </div>
@@ -332,6 +398,137 @@ export default function Home() {
             </section>
           </div>
         )}
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="text-base font-semibold">会話（MiniMax）</h2>
+              <p className="mt-1 text-sm text-zinc-400">テキスト入力（または音声入力）を送信して応答を表示します。</p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setTtsEnabled((v) => !v)}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-900"
+              >
+                {ttsEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+                {ttsEnabled ? '読み上げON' : '読み上げOFF'}
+              </button>
+            </div>
+          </div>
+
+          {!chatEndpoint ? (
+            <div className="mt-4 rounded-xl border border-amber-900/60 bg-amber-950/30 p-3 text-sm text-amber-200">
+              `VITE_CHAT_PROXY_URL` が未設定です。GitHub Pages単体ではMiniMax APIキーを安全に扱えないため、プロキシ（例: Supabase Edge Function）が必要です。
+            </div>
+          ) : null}
+
+          {chatError ? (
+            <div className="mt-4 rounded-xl border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
+              {chatError}
+            </div>
+          ) : null}
+
+          <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+            <div className="mb-2 text-xs text-zinc-400">履歴</div>
+            <div className="max-h-[40vh] space-y-3 overflow-auto pr-1">
+              {chatMessages
+                .filter((m) => m.role !== 'system')
+                .map((m, idx) => (
+                  <div
+                    key={`${m.role}-${idx}`}
+                    className={
+                      m.role === 'user'
+                        ? 'rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 text-sm'
+                        : 'rounded-xl border border-zinc-800 bg-zinc-900/10 p-3 text-sm'
+                    }
+                  >
+                    <div className="mb-1 text-xs text-zinc-400">{m.role === 'user' ? 'You' : 'MiniMax'}</div>
+                    <div className="whitespace-pre-wrap break-words text-zinc-100">{m.content}</div>
+                  </div>
+                ))}
+              {chatBusy ? (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/10 p-3 text-sm text-zinc-300">…</div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center">
+            <div className="flex flex-1 items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2">
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Type your message…"
+                className="w-full bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    onSendChat()
+                  }
+                }}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (dictation.status === 'listening') {
+                    dictation.stop()
+                    return
+                  }
+                  dictation.start({ lang: speechLang })
+                }}
+                disabled={!dictation.supported}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm font-semibold text-zinc-100 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Mic className="h-4 w-4" />
+                {dictation.status === 'listening' ? '入力中…' : '音声入力'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const t = dictation.transcript.trim()
+                  if (t) setChatInput((prev) => (prev ? `${prev} ${t}` : t))
+                  dictation.reset()
+                }}
+                disabled={!dictation.transcript.trim().length}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm font-semibold text-zinc-100 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Upload className="h-4 w-4" />
+                反映
+              </button>
+
+              <button
+                type="button"
+                onClick={onSendChat}
+                disabled={!canChat}
+                className="inline-flex items-center gap-2 rounded-xl bg-zinc-100 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Send className="h-4 w-4" />
+                {chatBusy ? '送信中…' : '送信'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  abortRef.current?.abort()
+                  dictation.reset()
+                  setChatError(null)
+                  setChatBusy(false)
+                  setChatInput('')
+                  setChatMessages((prev) => prev.slice(0, 1))
+                }}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm font-semibold text-zinc-100 hover:bg-zinc-900"
+              >
+                <RotateCcw className="h-4 w-4" />
+                クリア
+              </button>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   )
