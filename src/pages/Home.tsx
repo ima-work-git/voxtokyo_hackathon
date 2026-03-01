@@ -116,10 +116,22 @@ function parseJsonMaybe(text: string): unknown {
   }
 }
 
+function extractSpokenTextFromJsonish(text: string): string | null {
+  const m = text.match(/"spoken_text"\s*:\s*"([\s\S]*?)"/)
+  if (!m) return null
+  return m[1]
+}
+
+function extractCallFromText(text: string): '119' | '110' | null {
+  if (/\b110\b/.test(text)) return '110'
+  if (/\b119\b/.test(text)) return '119'
+  return null
+}
+
 function emergencyHeuristic(text: string, lang: DetectedLang): { spoken_text: string; call: '119' | '110' | null } | null {
   const t = text.trim()
   const normalized = t.replace(/[\s\u3000]+/g, '')
-  const isGreetingOnly = /^(もしもし|もしもーし|はい|お願いします|助けて|たすけて|help|hello|hi)$/i.test(normalized)
+  const isGreetingOnly = /^(もしもし|もしもーし|はい|お願いします|助けて|たすけて|help|hello|hi|喂|你好|救命|帮帮我)$/i.test(normalized)
 
   if (isGreetingOnly) {
     if (lang === 'ja') return { spoken_text: 'どうしましたか？', call: null }
@@ -127,9 +139,9 @@ function emergencyHeuristic(text: string, lang: DetectedLang): { spoken_text: st
     return { spoken_text: 'What happened?', call: null }
   }
 
-  const hasFire = /火事|火|煙|燃え|焦げ|ガス|爆発|fire|smoke|gas|explosion/i.test(t)
-  const hasBloodOrInjury = /血|出血|けが|怪我|意識|倒れ|呼吸|苦しい|胸|痛い|bleed|blood|injury|hurt|unconscious|breath|chest/i.test(t)
-  const hasCrime = /犯人|ストーカー|盗難|泥棒|暴力|脅迫|不審者|襲われ|crime|thief|stalker|attack|assault|threat/i.test(t)
+  const hasFire = /火事|火|煙|燃え|焦げ|ガス|爆発|火灾|着火|烟|煤气|爆炸|fire|smoke|gas|explosion/i.test(t)
+  const hasBloodOrInjury = /血|出血|けが|怪我|意識|倒れ|呼吸|苦しい|胸|痛い|流血|受伤|昏迷|呼吸困难|胸痛|疼|bleed|blood|injury|hurt|unconscious|breath|chest/i.test(t)
+  const hasCrime = /犯人|ストーカー|盗難|泥棒|暴力|脅迫|不審者|襲われ|跟踪|骚扰|偷|盗窃|打人|威胁|可疑|crime|thief|stalker|attack|assault|threat/i.test(t)
 
   if (hasCrime) {
     if (lang === 'ja') return { spoken_text: '警察です。危険の可能性があります。電話番号は110です。いまどこにいますか？', call: '110' }
@@ -427,7 +439,7 @@ export default function Home() {
         endpoint: chatEndpoint,
         messages,
         temperature: 0.0,
-        max_tokens: 256,
+        max_tokens: 512,
         signal: ac.signal,
       })
 
@@ -436,7 +448,7 @@ export default function Home() {
       const spoken =
         parsed && typeof parsed === 'object' && parsed !== null && typeof (parsed as { spoken_text?: unknown }).spoken_text === 'string'
           ? (parsed as { spoken_text: string }).spoken_text
-          : assistantText
+          : extractSpokenTextFromJsonish(assistantText) ?? assistantText
 
       const call =
         parsed && typeof parsed === 'object' && parsed !== null && (parsed as { call?: unknown }).call === '119'
@@ -446,7 +458,7 @@ export default function Home() {
             : null
 
       const safeSpoken = sanitizeAssistantText(spoken)
-      const inferredCall = /\b110\b/.test(safeSpoken) ? '110' : /\b119\b/.test(safeSpoken) ? '119' : null
+      const inferredCall = extractCallFromText(safeSpoken)
       if (dispatchRequestIdRef.current !== requestId) return
 
       setCallNumber(call ?? inferredCall)
