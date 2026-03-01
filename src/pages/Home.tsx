@@ -31,6 +31,7 @@ export default function Home() {
   const [ttsError, setTtsError] = useState<string | null>(null)
   const [ttsAudioUrl, setTtsAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const ttsObjectUrlRef = useRef<string | null>(null)
   const ttsAbortRef = useRef<AbortController | null>(null)
   const ttsRequestIdRef = useRef(0)
   const [voiceAutoSend, setVoiceAutoSend] = useState(true)
@@ -169,6 +170,11 @@ spoken_text は「結論（119/110/不明）→短い理由→不足質問（あ
       a.load()
     }
 
+    if (ttsObjectUrlRef.current) {
+      URL.revokeObjectURL(ttsObjectUrlRef.current)
+      ttsObjectUrlRef.current = null
+    }
+
     setTtsPlaying(true)
     setTtsAudioUrl(null)
 
@@ -184,14 +190,26 @@ spoken_text は「結論（119/110/不明）→短い理由→不足質問（あ
 
       if (ttsRequestIdRef.current !== requestId) return
 
-      if (!res.audio_url) {
-        setTtsError('TTSが音声URLを返しませんでした。')
+      if (!res.audio_url && !res.audio_hex) {
+        setTtsError('TTSが音声を返しませんでした。')
         return
       }
 
-      setTtsAudioUrl(res.audio_url)
+      let src = res.audio_url ?? null
+      if (!src && res.audio_hex) {
+        const hex = res.audio_hex
+        const bytes = new Uint8Array(hex.length / 2)
+        for (let i = 0; i < hex.length; i += 2) {
+          bytes[i / 2] = Number.parseInt(hex.slice(i, i + 2), 16)
+        }
+        const blob = new Blob([bytes], { type: 'audio/mpeg' })
+        src = URL.createObjectURL(blob)
+        ttsObjectUrlRef.current = src
+      }
+
+      setTtsAudioUrl(src)
       if (!a) return
-      a.src = res.audio_url
+      a.src = src
       a.load()
       const playPromise = a.play()
       if (playPromise) {

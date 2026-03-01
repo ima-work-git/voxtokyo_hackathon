@@ -21,6 +21,12 @@ type TtsRequest = {
   language_boost?: string
 }
 
+function isHexString(s: string) {
+  if (!s) return false
+  if (s.length < 32) return false
+  return /^[0-9a-fA-F]+$/.test(s)
+}
+
 function isTtsRequest(value: unknown): value is TtsRequest {
   if (!value || typeof value !== 'object') return false
   const v = value as { text?: unknown }
@@ -106,13 +112,30 @@ Deno.serve(async (req) => {
   }
 
   if (typeof payload === 'object' && payload !== null) {
-    const data = (payload as { data?: unknown }).data as { audio?: unknown } | undefined
-    if (data && typeof data.audio === 'string') {
-      const audioUrl = data.audio
-      return jsonResponse({ audio_url: audioUrl, raw: payload })
+    const baseResp = (payload as { base_resp?: unknown }).base_resp as { status_code?: unknown; status_msg?: unknown } | undefined
+    if (baseResp && typeof baseResp.status_code === 'number' && baseResp.status_code !== 0) {
+      return jsonResponse(
+        {
+          error: 'Upstream TTS error',
+          status: 502,
+          base_resp: baseResp,
+          payload,
+        },
+        { status: 502 },
+      )
     }
   }
 
-  return jsonResponse({ audio_url: null, raw: payload })
-})
+  if (typeof payload === 'object' && payload !== null) {
+    const data = (payload as { data?: unknown }).data as { audio?: unknown; audio_url?: unknown; url?: unknown } | undefined
 
+    const candidates: Array<unknown> = [data?.audio_url, data?.url, data?.audio, (payload as { audio_url?: unknown }).audio_url]
+    for (const c of candidates) {
+      if (typeof c !== 'string') continue
+      if (c.startsWith('http://') || c.startsWith('https://')) return jsonResponse({ audio_url: c, raw: payload })
+      if (isHexString(c)) return jsonResponse({ audio_hex: c, raw: payload })
+    }
+  }
+
+  return jsonResponse({ audio_url: null, audio_hex: null, raw: payload })
+})

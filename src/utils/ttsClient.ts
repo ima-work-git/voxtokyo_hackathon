@@ -1,5 +1,6 @@
 export type TtsResponse = {
   audio_url: string | null
+  audio_hex?: string | null
   raw?: unknown
 }
 
@@ -41,9 +42,11 @@ export async function ttsWithProxy(params: {
 
   if (typeof payload === 'object' && payload !== null) {
     const audioUrl = (payload as { audio_url?: unknown }).audio_url
-    if (typeof audioUrl === 'string' || audioUrl === null) return payload as TtsResponse
+    const audioHex = (payload as { audio_hex?: unknown }).audio_hex
+    if (typeof audioUrl === 'string' || audioUrl === null || typeof audioHex === 'string' || audioHex === null) {
+      return payload as TtsResponse
+    }
   }
 
   return { audio_url: null, raw: payload }
 }
-
