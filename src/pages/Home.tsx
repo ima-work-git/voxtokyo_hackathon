@@ -151,9 +151,10 @@ export default function Home() {
 
   const preferredLang = useMemo<DetectedLang>(() => {
     if (typeof navigator === 'undefined') return 'en'
-    const l = (navigator.language || '').toLowerCase()
-    if (l.startsWith('ja')) return 'ja'
-    if (l.startsWith('zh')) return 'zh'
+    const langs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language]).filter(Boolean)
+    const lower = langs.map((l) => String(l).toLowerCase())
+    if (lower.some((l) => l.startsWith('ja'))) return 'ja'
+    if (lower.some((l) => l.startsWith('zh'))) return 'zh'
     return 'en'
   }, [])
 
@@ -175,17 +176,14 @@ export default function Home() {
   }, [stt.interimTranscript, stt.transcript])
 
   const detectedLang = useMemo(() => detectLanguageFromText(spokenText), [spokenText])
-  const sttLang = useMemo(() => {
-    if (!spokenText) return toBcp47(preferredLang)
-    return toBcp47(detectedLang)
-  }, [detectedLang, preferredLang, spokenText])
+  const sttLang = useMemo(() => toBcp47(preferredLang), [preferredLang])
 
   useEffect(() => {
     if (autoStartedRef.current) return
     if (!stt.supported) return
     autoStartedRef.current = true
-    stt.start({ lang: toBcp47(preferredLang) })
-  }, [preferredLang, stt.start, stt.supported])
+    stt.start({ lang: sttLang })
+  }, [stt.start, stt.supported, sttLang])
 
   async function speakWithMiniMax(text: string, lang: DetectedLang) {
     if (!ttsEndpoint) return
